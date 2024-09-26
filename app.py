@@ -1,4 +1,4 @@
-from flask import Flask, request, render_template, redirect, url_for, flash
+from flask import Flask, request, render_template, redirect, url_for, flash, send_file
 import os
 import nltk
 from nltk.corpus import stopwords
@@ -11,18 +11,29 @@ nltk.download('stopwords')
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['SUMMARY_FOLDER'] = 'summaries'
 
-# Ensure upload folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(app.config['SUMMARY_FOLDER'], exist_ok=True)
 
-# Preprocess text function
 def preprocess_text(text):
     stop_words = set(stopwords.words('english'))
     words = word_tokenize(text)
     filtered_words = [word for word in words if word.isalnum() and word.lower() not in stop_words]
     return ' '.join(filtered_words)
 
-# Read PDF function
+def generate_summary(text, model_name="facebook/bart-large-cnn", max_length=150, min_length=50, do_sample=False):
+    summarizer = pipeline("summarization", model=model_name)
+    chunks = split_text(text)
+    summaries = []
+
+    for chunk in chunks:
+        summary = summarizer(chunk, max_length=max_length, min_length=min_length, do_sample=do_sample)
+        summaries.append(summary[0]['summary_text'])
+
+    return ' '.join(summaries)
+
+
 def read_pdf(file_path):
     with open(file_path, 'rb') as file:
         reader = PyPDF2.PdfReader(file)
@@ -31,7 +42,7 @@ def read_pdf(file_path):
             text += page.extract_text()
     return text
 
-# Split text into chunks
+
 def split_text(text, max_length=400):
     sentences = text.split('. ')
     chunks = []
@@ -53,19 +64,12 @@ def split_text(text, max_length=400):
 
     return chunks
 
-# Summarization function
-def generate_summary(text, model_name="facebook/bart-large-cnn", max_length=100, min_length=30, do_sample=False):
-    summarizer = pipeline("summarization", model=model_name)
-    chunks = split_text(text)
-    summaries = []
+def save_summary_to_file(summary, filename):
+    file_path = os.path.join(app.config['SUMMARY_FOLDER'], filename)
+    with open(file_path, 'w') as file:
+        file.write(summary)
+    return file_path
 
-    for chunk in chunks:
-        summary = summarizer(chunk, max_length=max_length, min_length=min_length, do_sample=do_sample)
-        summaries.append(summary[0]['summary_text'])
-
-    return ' '.join(summaries)
-
-# Routes for the app
 @app.route('/')
 def home():
     return render_template('index.html')
@@ -82,19 +86,23 @@ def upload_file():
         return redirect(url_for('home'))
 
     if file:
-        # Save the uploaded file
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
         file.save(file_path)
 
-        # Read and summarize the PDF
         text = read_pdf(file_path)
         summary = generate_summary(text)
 
-        # Clean up (delete file after processing)
+        summary_filename = f"summary_{os.path.splitext(file.filename)[0]}.txt"
+        summary_file_path = save_summary_to_file(summary, summary_filename)
+
         os.remove(file_path)
 
-        # Pass summary to the template
-        return render_template('index.html', summary=summary)
+        return render_template('index.html', summary=summary, summary_filename=summary_filename)
+
+@app.route('/download/<summary_filename>', methods=['GET'])
+def download_summary(summary_filename):
+    file_path = os.path.join(app.config['SUMMARY_FOLDER'], summary_filename)
+    return send_file(file_path, as_attachment=True)
 
 if __name__ == "__main__":
     app.run(debug=True)
